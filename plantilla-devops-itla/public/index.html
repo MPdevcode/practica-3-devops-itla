@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Aplicación de lista de tareas para demostrar CI/CD con GitHub Actions en ITLA.">
+  <title>Gestor de tareas | Práctica DevOps ITLA</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, sans-serif; }
+    body { max-width: 760px; margin: 48px auto; padding: 0 20px; color: #182235; background: #f5f7fb; }
+    main { background: white; border: 1px solid #e1e7f0; border-radius: 16px; padding: 28px; box-shadow: 0 8px 30px #172b4d12; }
+    h1 { color: #1f3b63; margin-top: 0; }
+    .sub { color: #5d6b82; }
+    form { display: flex; gap: 10px; margin: 22px 0; }
+    input { flex: 1; min-width: 0; padding: 12px; border: 1px solid #cbd5e1; border-radius: 8px; font: inherit; }
+    button { padding: 10px 14px; border: 0; border-radius: 8px; cursor: pointer; font: inherit; }
+    button[type="submit"] { color: white; background: #1f5fae; }
+    ul { list-style: none; padding: 0; margin: 0; }
+    li { display: flex; align-items: center; gap: 10px; padding: 12px 0; border-top: 1px solid #edf0f5; }
+    li span { flex: 1; overflow-wrap: anywhere; }
+    li.hecha span { text-decoration: line-through; color: #788397; }
+    .delete { color: #a12828; background: #fff0f0; }
+    .empty { color: #788397; padding: 18px 0; }
+    #aviso { padding: 10px 12px; border-radius: 8px; background: #eef5ff; color: #254d7b; font-size: .92rem; }
+    .meta { margin-top: 24px; color: #788397; font-size: .85rem; }
+    @media (max-width: 520px) { form { flex-direction: column; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Gestor de tareas</h1>
+    <p class="sub">Aplicación de demostración para la Práctica 3 de DevOps — ITLA.</p>
+    <p id="aviso" role="status">Comprobando conexión con la API…</p>
+    <form id="formulario">
+      <input id="titulo" name="titulo" maxlength="100" placeholder="Escribe una tarea (máximo 100 caracteres)" required>
+      <button type="submit">Agregar tarea</button>
+    </form>
+    <ul id="lista" aria-live="polite"></ul>
+    <p class="meta">Pipeline CI/CD: GitHub Actions · Pruebas: Jest + Supertest · Contenedor: Docker</p>
+  </main>
+  <script>
+    const lista = document.getElementById('lista');
+    const aviso = document.getElementById('aviso');
+    const formulario = document.getElementById('formulario');
+    const campoTitulo = document.getElementById('titulo');
+    const STORAGE_KEY = 'devops-itla-tareas-v1';
+    let modoLocal = false;
+    let tareasLocales = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+    let siguienteIdLocal = tareasLocales.reduce((max, tarea) => Math.max(max, tarea.id), 0) + 1;
+
+    async function apiDisponible() {
+      try {
+        const respuesta = await fetch('health');
+        return respuesta.ok;
+      } catch (_) { return false; }
+    }
+
+    function guardarLocal() { localStorage.setItem(STORAGE_KEY, JSON.stringify(tareasLocales)); }
+
+    async function obtenerTareas() {
+      if (modoLocal) return tareasLocales;
+      const respuesta = await fetch('api/tareas');
+      if (!respuesta.ok) throw new Error('No se pudo consultar la API');
+      return respuesta.json();
+    }
+
+    async function cargar() {
+      try {
+        const tareas = await obtenerTareas();
+        lista.replaceChildren();
+        if (!tareas.length) {
+          const vacio = document.createElement('li'); vacio.className = 'empty';
+          vacio.textContent = 'Todavía no hay tareas. ¡Agrega la primera!'; lista.appendChild(vacio); return;
+        }
+        tareas.forEach(tarea => {
+          const elemento = document.createElement('li');
+          if (tarea.completada) elemento.classList.add('hecha');
+          const texto = document.createElement('span'); texto.textContent = tarea.titulo;
+          const completar = document.createElement('button'); completar.type = 'button';
+          completar.textContent = tarea.completada ? 'Reabrir' : 'Completar';
+          completar.addEventListener('click', () => cambiarEstado(tarea.id));
+          const eliminar = document.createElement('button'); eliminar.type = 'button';
+          eliminar.className = 'delete'; eliminar.textContent = 'Eliminar';
+          eliminar.addEventListener('click', () => eliminarTarea(tarea.id));
+          elemento.append(texto, completar, eliminar); lista.appendChild(elemento);
+        });
+      } catch (_) {
+        aviso.textContent = 'No fue posible cargar las tareas. Recarga la página para reintentar.';
+      }
+    }
+
+    async function cambiarEstado(id) {
+      if (modoLocal) {
+        tareasLocales = tareasLocales.map(t => t.id === id ? { ...t, completada: !t.completada } : t);
+        guardarLocal();
+      } else { await fetch(`api/tareas/${id}`, { method: 'PATCH' }); }
+      await cargar();
+    }
+
+    async function eliminarTarea(id) {
+      if (modoLocal) {
+        tareasLocales = tareasLocales.filter(t => t.id !== id); guardarLocal();
+      } else {
+        const respuesta = await fetch(`api/tareas/${id}`, { method: 'DELETE' });
+        if (!respuesta.ok) { aviso.textContent = 'No se pudo eliminar la tarea.'; return; }
+      }
+      await cargar();
+    }
+
+    formulario.addEventListener('submit', async evento => {
+      evento.preventDefault();
+      const titulo = campoTitulo.value.trim();
+      if (!titulo || titulo.length > 100) { aviso.textContent = 'El título debe tener entre 1 y 100 caracteres.'; return; }
+      if (modoLocal) {
+        tareasLocales.push({ id: siguienteIdLocal++, titulo, completada: false }); guardarLocal();
+      } else {
+        const respuesta = await fetch('api/tareas', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ titulo })
+        });
+        if (!respuesta.ok) { aviso.textContent = 'La API rechazó la tarea.'; return; }
+      }
+      campoTitulo.value = ''; aviso.textContent = modoLocal ? 'Modo demostración: datos guardados en este navegador.' : 'Conectado a la API.';
+      await cargar();
+    });
+
+    (async () => {
+      modoLocal = !(await apiDisponible());
+      aviso.textContent = modoLocal
+        ? 'Modo GitHub Pages: las tareas se guardan localmente en este navegador.'
+        : 'Conectado a la API Express.';
+      await cargar();
+    })();
+  </script>
+</body>
+</html>
