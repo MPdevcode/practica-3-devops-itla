@@ -1,0 +1,71 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: Validación, pruebas y Docker
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Instalar dependencias
+        run: npm install
+
+      - name: Revisar sintaxis
+        run: npm run lint
+
+      - name: Ejecutar pruebas y cobertura
+        run: npm test
+
+      - name: Construir imagen Docker
+        run: docker build -t devops-itla:${{ github.sha }} .
+
+      - name: Guardar reporte de cobertura
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reporte-cobertura
+          path: coverage/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  deploy-pages:
+    name: Despliegue a GitHub Pages
+    needs: build-test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@v4
+      - name: Configurar GitHub Pages
+        uses: actions/configure-pages@v5
+      - name: Preparar archivos estáticos
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+      - name: Publicar sitio
+        id: deployment
+        uses: actions/deploy-pages@v4
